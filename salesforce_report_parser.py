@@ -15,7 +15,8 @@ KNOWN_FIELDS = [
 # "everything up to the next known fieldname= or the end of string"
 _field_alternation = "|".join(KNOWN_FIELDS)
 FIELD_PATTERN = re.compile(
-    rf"({_field_alternation})=(.*?)(?=(?:{_field_alternation})=|$)"
+    rf"({_field_alternation})=(.*?)(?=(?:{_field_alternation})=|$)",
+    re.DOTALL
 )
 
 SPORT_FIELDS = [
