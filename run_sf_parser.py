@@ -27,7 +27,7 @@ def load_and_parse(filepath: str, responses_column: str = "Responses"):
 
 
 if __name__ == "__main__":
-    filepath = "data/csv_sensitive.csv"  # update to your actual filename
+    filepath = "data/csv_scrubbed.csv"  # update to your actual filename
     parsed = load_and_parse(filepath)
 
     for fields, decision in parsed:
