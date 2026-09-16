@@ -1,8 +1,25 @@
+"""
+emailer.py
+
+Takes a routing decision from salesforce_report_parser.py (sport(s) + ticket_type,
+or multi-sport) and sends the matching static template email to the
+recipient. Templates are static text, no personalization placeholders.
+
+Supports --dry-run (default) and --send (real sending via Gmail SMTP).
+"""
+
+import os
 import argparse
 import textwrap
+import smtplib
+from email.mime.text import MIMEText
+from dotenv import load_dotenv
 
-# Maps the sport field name (from Salesforce) to the filename prefix
-# used in templates/
+load_dotenv()
+
+GMAIL_ADDRESS = os.environ.get("GMAIL_ADDRESS")
+GMAIL_APP_PASSWORD = os.environ.get("GMAIL_APP_PASSWORD")
+
 SPORT_TO_PREFIX = {
     "Football": "football",
     "Volleyball": "vball",
@@ -12,34 +29,23 @@ SPORT_TO_PREFIX = {
     "Baseball": "baseball",
 }
 
-# Maps the ticket_type field name to the filename suffix
 TICKET_TYPE_TO_SUFFIX = {
     "SingleGameTickets": "single",
     "SeasonTickets": "season",
     "GroupTickets": "group",
 }
 
+TICKET_TYPE_DISPLAY = {
+    "SingleGameTickets": "Single Game Tickets",
+    "SeasonTickets": "Season Tickets",
+    "GroupTickets": "Group Tickets",
+}
+
 TEMPLATES_DIR = "templates"
 
-def build_subject(sports: list[str], ticket_type: str) -> str:
-    """Generate a subject line based on sport(s) and ticket type."""
-    sport_display = " and ".join(sports) if len(sports) == 1 else "Multi-Sport"
-    ticket_display = {
-        "SingleGameTickets": "Single Game Tickets",
-        "SeasonTickets": "Season Tickets",
-        "GroupTickets": "Group Tickets",
-    }.get(ticket_type, "Ticket")
-
-    return f"Your {sport_display} {ticket_display} Interest"
 
 def resolve_template_filename(sports: list[str], ticket_type: str) -> str:
-    """
-    Given the list of interested sports and the ticket type, return the
-    matching template filename.
-
-    Multi-sport submissions always use the single generic multi_sport.txt,
-    regardless of ticket type.
-    """
+    """Map sport(s) + ticket_type to the matching template filename."""
     if len(sports) > 1:
         return f"{TEMPLATES_DIR}/multi_sport.txt"
 
@@ -56,27 +62,20 @@ def resolve_template_filename(sports: list[str], ticket_type: str) -> str:
 
 
 def load_template(filename: str) -> str:
-    """Read the raw template file content."""
+    """Read the raw template file content (static text, no placeholders)."""
     with open(filename, encoding="utf-8") as f:
         return f.read()
 
 
-def fill_template(template_text: str, fields: dict, sports: list[str]) -> str:
-    """
-    Fill in placeholders like {first_name}, {sport} using the parsed
-    fields dict. Sport is joined into a readable string if there are
-    multiple (only relevant for the multi_sport template).
-    """
-    sport_display = " and ".join(sports)
-
-    return template_text.format(
-        first_name=fields.get("firstName", ""),
-        last_name=fields.get("lastName", ""),
-        sport=sport_display,
-    )
+def build_subject(sports: list[str], ticket_type: str) -> str:
+    """Generate a subject line based on sport(s) and ticket type."""
+    sport_display = " and ".join(sports) if len(sports) == 1 else "Multi-Sport"
+    ticket_display = TICKET_TYPE_DISPLAY.get(ticket_type, "Ticket")
+    return f"Your {sport_display} {ticket_display} Interest"
 
 
 def send_email(to_address: str, subject: str, body: str, dry_run: bool = True):
+    """Send the email via Gmail SMTP, or print it if dry_run is True."""
     wrapped_body = textwrap.fill(body, width=70)
 
     if dry_run:
@@ -84,10 +83,25 @@ def send_email(to_address: str, subject: str, body: str, dry_run: bool = True):
         print(f"Subject: {subject}")
         print(wrapped_body)
         print("--- END ---\n")
-    else:
-        raise NotImplementedError("Real sending not wired up yet")
+        return
+
+    if not GMAIL_ADDRESS or not GMAIL_APP_PASSWORD:
+        raise RuntimeError("Missing GMAIL_ADDRESS or GMAIL_APP_PASSWORD in .env")
+
+    msg = MIMEText(wrapped_body)
+    msg["Subject"] = subject
+    msg["From"] = GMAIL_ADDRESS
+    msg["To"] = to_address
+
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+        server.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
+        server.sendmail(GMAIL_ADDRESS, [to_address], msg.as_string())
+
+    print(f"Sent to {to_address}")
+
 
 def process_submission(fields: dict, decision: dict, dry_run: bool = True):
+    """Resolve the right template and send (or dry-run print) it."""
     if decision["action"] != "send_template":
         print(f"Skipping {fields.get('emailAddress')}: {decision.get('reason')}")
         return
@@ -96,23 +110,20 @@ def process_submission(fields: dict, decision: dict, dry_run: bool = True):
     ticket_type = decision["ticket_type"]
 
     filename = resolve_template_filename(sports, ticket_type)
-    template_text = load_template(filename)
-
-    filled_body = fill_template(template_text, fields, sports)
+    body = load_template(filename)
     subject = build_subject(sports, ticket_type)
 
     send_email(
         to_address=fields.get("emailAddress"),
         subject=subject,
-        body=filled_body,
+        body=body,
         dry_run=dry_run,
     )
 
 
 if __name__ == "__main__":
-    import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument("--dry-run", action="store_true", default=True)
+    parser.add_argument("--send", action="store_true", help="Actually send emails instead of dry-run")
     args = parser.parse_args()
 
     from run_sf_parser import load_and_parse
@@ -121,4 +132,4 @@ if __name__ == "__main__":
     parsed_rows = load_and_parse(filepath)
 
     for fields, decision in parsed_rows:
-        process_submission(fields, decision, dry_run=args.dry_run)
+        process_submission(fields, decision, dry_run=not args.send)
